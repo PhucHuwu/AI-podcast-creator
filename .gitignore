@@ -41,6 +41,8 @@ output/
 *.mp4
 *.wav
 *.mp3
+!media/vertical.mp4
+!media/horizontal.mp4
 
 # Draft docs
 *.md

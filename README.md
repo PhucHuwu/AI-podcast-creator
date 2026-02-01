@@ -10,6 +10,13 @@ A Python tool that automatically generates podcast videos from script data. It c
 - Creates video segments with FFmpeg
 - Supports horizontal (16:9) and vertical (9:16) video formats
 - Generates SRT subtitle files
+- Audio spectrum visualization
+- Vignette effect
+
+## Demo
+
+<video src="media/horizontal.mp4" controls height="300"></video>
+<video src="media/vertical.mp4" controls height="300"></video>
 
 ## Requirements
 

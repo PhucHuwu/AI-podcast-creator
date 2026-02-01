@@ -15,9 +15,13 @@ A Python tool that automatically generates podcast videos from script data. It c
 
 ## Demo
 
-| Horizontal (16:9) | Vertical (9:16) |
-|-------------------|-----------------|
-| https://github.com/user-attachments/assets/6f01b461-1593-4c1c-8ad1-604bb59afd01 | https://github.com/user-attachments/assets/8edfbd44-ec5d-4bec-9331-d1e50fd618f2 |
+**Horizontal (16:9)**
+
+https://github.com/user-attachments/assets/6f01b461-1593-4c1c-8ad1-604bb59afd01
+
+**Vertical (9:16)**
+
+https://github.com/user-attachments/assets/8edfbd44-ec5d-4bec-9331-d1e50fd618f2
 
 ## Requirements
 

@@ -102,7 +102,3 @@ AI-podcast-creator/
 ├── temp/               # Temporary files
 └── output/             # Generated videos
 ```
-
-## License
-
-MIT License

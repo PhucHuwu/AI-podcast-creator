@@ -51,7 +51,7 @@ def create_video_segment(
     height = settings["height"]
     
     # Spectrum bar dimensions
-    spectrum_width = int(width * 0.8)  # 80% of video width
+    spectrum_width = int(width * 0.5)  # 50% of video width
     spectrum_height = 100  # Height of spectrum bars
     
     # Complex filter for audio spectrum with mirrored bars
@@ -70,8 +70,8 @@ def create_video_segment(
         # Draw semi-transparent black background for spectrum
         f"drawbox=x={spectrum_x}:y={spectrum_y}:w={spectrum_width}:h={spectrum_total_height}:color=black@0.5:t=fill[bg];"
         
-        # Create audio waveform (white bars on transparent background)
-        f"[1:a]showwaves=s={spectrum_width}x{spectrum_height}:mode=cline:colors=white:rate={VIDEO_FPS},"
+        # Create audio waveform (white bars, fewer samples for cleaner look)
+        f"[1:a]showwaves=s={spectrum_width}x{spectrum_height}:mode=line:n=1:colors=white:rate={VIDEO_FPS},"
         f"format=rgba[waves];"
         
         # Mirror the waveform vertically (flip and stack)

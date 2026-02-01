@@ -161,7 +161,7 @@ def create_podcast_video(
     # Determine aspect ratio for image
     if video_format == VideoFormat.VERTICAL:
         aspect_desc = "vertical portrait orientation (9:16 aspect ratio)"
-        composition = "The people are arranged vertically, possibly standing or in a vertical composition"
+        composition = "The people are arranged vertically (one above the other), close-up faces stacked in portrait layout"
     else:
         aspect_desc = "horizontal landscape orientation (16:9 aspect ratio)"
         composition = "The people are sitting side by side in a wide shot"

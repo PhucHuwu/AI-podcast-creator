@@ -81,6 +81,51 @@ python main.py --script-id 01KFR5ZNEXE1J936J9BRCHFZ4J --output podcast.mp4 --bur
 python main.py --script-id 01KFR5ZNEXE1J936J9BRCHFZ4J --output shorts.mp4 --format vertical
 ```
 
+## API Usage (Service Mode)
+
+Run as an HTTP API service for integration with other applications:
+
+```bash
+# Start the API server
+uvicorn api:app --host 0.0.0.0 --port 8000
+
+# Or with auto-reload for development
+uvicorn api:app --reload --port 8000
+```
+
+### API Endpoints
+
+| Method | Endpoint                            | Description          |
+| ------ | ----------------------------------- | -------------------- |
+| GET    | `/health`                           | Health check         |
+| POST   | `/api/v1/videos`                    | Create video (async) |
+| GET    | `/api/v1/videos/{task_id}`          | Get task status      |
+| GET    | `/api/v1/videos/{task_id}/download` | Download video       |
+| GET    | `/api/v1/videos/{task_id}/subtitle` | Download subtitle    |
+
+### Example: Create Video
+
+```bash
+# Start video creation
+curl -X POST http://localhost:8000/api/v1/videos \
+  -H "Content-Type: application/json" \
+  -d '{
+    "script_id": "01KFR5ZNEXE1J936J9BRCHFZ4J",
+    "video_format": "horizontal",
+    "max_lines": 5
+  }'
+
+# Response: {"task_id": "abc-123", "message": "Video creation started"}
+
+# Check status
+curl http://localhost:8000/api/v1/videos/abc-123
+
+# Download when completed
+curl -o video.mp4 http://localhost:8000/api/v1/videos/abc-123/download
+```
+
+API documentation is available at `http://localhost:8000/docs` (Swagger UI).
+
 ## Output
 
 - Video file: `output/<filename>.mp4`
@@ -98,9 +143,11 @@ Edit `config.py` to customize:
 
 ```
 AI-podcast-creator/
-├── main.py             # Main entry point
+├── main.py             # CLI entry point
+├── api.py              # FastAPI server
+├── schemas.py          # Pydantic models
 ├── config.py           # Configuration
-├── api_client.py       # API interactions
+├── api_client.py       # External API interactions
 ├── media_processor.py  # Image/Audio processing
 ├── video_generator.py  # Video creation with FFmpeg
 ├── requirements.txt    # Dependencies

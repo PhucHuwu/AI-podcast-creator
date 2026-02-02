@@ -73,6 +73,10 @@ class TaskStatusResponse(BaseModel):
         le=100,
         description="Progress percentage (0-100)"
     )
+    message: Optional[str] = Field(
+        default=None,
+        description="Current step description"
+    )
     video_url: Optional[str] = Field(
         default=None,
         description="URL to download video when completed"

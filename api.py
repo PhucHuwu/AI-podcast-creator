@@ -51,14 +51,19 @@ def process_video_task(task_id: str, request: CreateVideoRequest):
 
         tasks[task_id]["progress"] = 20
 
-        # Create the video
+        # Progress callback
+        def update_progress(progress: int, message: str):
+            tasks[task_id]["progress"] = progress
+            tasks[task_id]["message"] = message
+
         result_path = create_podcast_video(
             script_id=request.script_id,
             output_path=output_path,
             video_format=video_format,
             skip_image_generation=request.skip_image_generation,
             max_lines=request.max_lines,
-            burn_subtitles=request.burn_subtitles
+            burn_subtitles=request.burn_subtitles,
+            progress_callback=update_progress
         )
 
         tasks[task_id]["progress"] = 90
@@ -140,10 +145,10 @@ async def create_video(
     """
     task_id = str(uuid.uuid4())
 
-    # Initialize task
     tasks[task_id] = {
         "status": TaskStatusEnum.PENDING,
         "progress": 0,
+        "message": "Waiting to start",
         "video_path": None,
         "subtitle_path": None,
         "error": None,
@@ -181,6 +186,7 @@ async def get_task_status(task_id: str):
         task_id=task_id,
         status=task["status"],
         progress=task["progress"],
+        message=task.get("message"),
         error=task.get("error")
     )
 

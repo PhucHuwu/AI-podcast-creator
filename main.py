@@ -1,4 +1,3 @@
-
 """
 AI Podcast Creator - Main Script
 
@@ -21,16 +20,20 @@ from config import (
     VideoFormat,
     TEMP_DIR,
     OUTPUT_DIR,
+    MAX_DOWNLOAD_THREADS,
+    MAX_VIDEO_THREADS,
+    SEGMENT_BATCH_SIZE,
     get_video_dimensions,
     validate_config
 )
-from api_client import get_script_lines, generate_image, download_audio
+from api_client import get_script_lines, generate_image, download_audio, get_script_info
 from media_processor import (
     save_image,
     save_audio,
     get_audio_duration,
     create_subtitle_file,
-    resize_image_for_video
+    resize_image_for_video,
+    concatenate_audios
 )
 from video_generator import (
     check_ffmpeg,
@@ -88,11 +91,20 @@ def create_podcast_video(
     # Step 1: Fetch script lines
     print("\n[1/6] Fetching script lines...")
     update_progress(1, "Fetching script lines")
-    lines = get_script_lines(script_id)
-    print(f"Found {len(lines)} lines")
+    all_lines = get_script_lines(script_id)
+    print(f"Found {len(all_lines)} lines")
 
-    if not lines:
+    if not all_lines:
         raise ValueError("No script lines found")
+
+    # Filter out lines without audio_path
+    lines = [line for line in all_lines if line.audio_path]
+    skipped = len(all_lines) - len(lines)
+    if skipped > 0:
+        print(f"Skipped {skipped} lines without audio")
+    
+    if not lines:
+        raise ValueError("No lines with audio found")
 
     # Limit lines if specified
     if max_lines > 0:
@@ -108,31 +120,61 @@ def create_podcast_video(
     audio_dir.mkdir(parents=True, exist_ok=True)
     segments_dir.mkdir(parents=True, exist_ok=True)
 
-    # Step 2: Download audio files (multi-threaded)
-    print("\n[2/6] Downloading audio files (3 threads)...")
+    # Step 2: Download audio files (sequential to avoid backend overload)
+    print("\n[2/6] Downloading audio files...")
     update_progress(2, "Downloading audio files")
 
     def download_single_audio(args):
         """Download a single audio file. Returns (index, audio_path, duration)."""
+        import sys
+        import os
+        from urllib.parse import urlparse, unquote
+        
         i, line, audio_dir = args
+        
+        if not line.audio_path:
+             raise ValueError(f"Audio path is empty for line {i+1}")
+             
+        # Extract filename from URL
+        parsed_url = urlparse(line.audio_path)
+        filename = os.path.basename(unquote(parsed_url.path))
+        if not filename or filename == ".":
+             filename = f"audio_{i:03d}.wav" # Fallback
+             
+        # Sanitize filename
+        filename = "".join(x for x in filename if x.isalnum() or x in "._- ")
+        audio_file = str(audio_dir / filename)
+        
+        # Check if file exists in cache (temp/audio)
+        if os.path.exists(audio_file):
+             print(f"  Using cached audio {i+1}/{len(lines)}: '{filename}'", flush=True)
+             try:
+                 duration = get_audio_duration(audio_file)
+                 return (i, audio_file, duration)
+             except Exception as e:
+                 print(f"  Warning: Cached file {filename} invalid ({e}), re-downloading...", flush=True)
+                 # Fall through to download
+        
+        print(f"  Downloading audio {i+1}/{len(lines)}: '{line.audio_path}' -> '{filename}'", flush=True)
+        
         audio_bytes = download_audio(line.audio_path)
-        audio_file = str(audio_dir / f"audio_{i:03d}.wav")
         save_audio(audio_bytes, audio_file)
         duration = get_audio_duration(audio_file)
+        print(f"  Completed audio {i+1}/{len(lines)}: '{filename}' ({duration:.2f}s)", flush=True)
         return (i, audio_file, duration)
 
     # Prepare download tasks
     download_tasks = [(i, line, audio_dir) for i, line in enumerate(lines)]
 
-    # Download with 3 threads
+    # Download with configured thread pool
     results = [None] * len(lines)
-    with ThreadPoolExecutor(max_workers=3) as executor:
+    print(f"Run download_single_audio with {MAX_DOWNLOAD_THREADS} threads")
+    with ThreadPoolExecutor(max_workers=MAX_DOWNLOAD_THREADS) as executor:
         futures = {executor.submit(download_single_audio, task): task[0] for task in download_tasks}
 
         for future in as_completed(futures):
             idx, audio_file, duration = future.result()
             results[idx] = (audio_file, duration)
-            print(f"  Downloaded {idx+1}/{len(lines)}: {lines[idx].audio_path} ({duration:.2f}s)")
 
     # Extract results in correct order
     audio_paths = [r[0] for r in results]
@@ -178,13 +220,40 @@ def create_podcast_video(
         composition = "The people are sitting side by side in a wide shot"
 
     # Build realistic image prompt
-    image_prompt = (
-        f"A photorealistic image in {aspect_desc} of {num_people} people ({gender_desc}) having a podcast conversation. "
-        f"{composition}. Modern podcast studio with microphones. "
-        f"Professional lighting, high quality, 4K, realistic human faces and expressions. "
-        f"The atmosphere is friendly and engaging. "
-        f"Names: {', '.join(char_names)}."
-    )
+    
+    # Fetch script info for context
+    try:
+        script_info = get_script_info(script_id)
+        # Use default if topic_type is missing or empty
+        topic_type = script_info.topic_type if script_info.topic_type else "LONG"
+        topic_context = f"Topic: {script_info.topic_title}. Lesson: {script_info.lesson_title}. Script: {script_info.title}."
+        print(f"  Using script context: {topic_context} (Type: {topic_type})")
+    except Exception as e:
+        print(f"  Warning: Failed to fetch script info ({e}), proceeding without specific context")
+        topic_context = ""
+        topic_type = "LONG"
+
+    if topic_type == "SHORT":
+         # Short video prompt: Situation-based, 2 characters, background relevant to context
+         image_prompt = (
+            f"A photorealistic image of a specific situation: {topic_context} "
+            f"Two characters (1 male, 1 female) interacting naturally in a suitable background. "
+            f"Cinematic lighting, {aspect_desc}, high quality, 4K, realistic human faces and expressions. "
+            f"The atmosphere is friendly and engaging. "
+             f"Names: {', '.join(char_names)}."
+         )
+         print(f"  Using SHORT format prompt")
+    else:
+        # Long video prompt: Podcast studio (Default)
+        image_prompt = (
+            f"A photorealistic image in {aspect_desc} of {num_people} people ({gender_desc}) having a podcast conversation. "
+            f"{composition}. Modern podcast studio with microphones. "
+            f"Context: {topic_context} "
+            f"Professional lighting, high quality, 4K, realistic human faces and expressions. "
+            f"The atmosphere is friendly and engaging. "
+            f"Names: {', '.join(char_names)}."
+        )
+        print(f"  Using LONG format prompt")
 
     print(f"  Characters: {num_people} people ({gender_desc})")
     print(f"  Names: {', '.join(char_names)}")
@@ -213,9 +282,15 @@ def create_podcast_video(
         img.save(cover_image_file)
         print(f"  Created placeholder cover image")
     else:
-        print(f"  Generating realistic podcast image...")
+        # Determine style based on topic type
+        if topic_type == "SHORT":
+            image_style = "cinematic photorealistic"
+        else:
+            image_style = "photorealistic podcast studio"
+
+        print(f"  Generating realistic image (Style: {image_style})...")
         try:
-            image_bytes = generate_image(image_prompt, style="photorealistic podcast studio")
+            image_bytes = generate_image(image_prompt, style=image_style)
             save_image(image_bytes, cover_image_file)
 
             # Resize to fit video dimensions
@@ -238,40 +313,78 @@ def create_podcast_video(
     create_subtitle_file(lines, audio_durations, subtitle_file)
     print(f"  Subtitle file created: {subtitle_file}")
 
-    # Step 5: Create video segments (multi-threaded)
-    print("\n[5/6] Creating video segments (4 threads)...")
+    # Step 5: Create video segments (batched)
+    num_batches = (len(lines) + SEGMENT_BATCH_SIZE - 1) // SEGMENT_BATCH_SIZE
+    print(f"\n[5/6] Creating video segments ({num_batches} batches, size {SEGMENT_BATCH_SIZE}, {MAX_VIDEO_THREADS} threads)...")
     update_progress(5, "Creating video segments")
 
-    def create_single_segment(args):
-        """Create a single video segment. Returns (index, segment_path)."""
-        i, image_path, audio_path, segments_dir, video_format = args
-        segment_file = str(segments_dir / f"segment_{i:03d}.mp4")
+    def create_batch_segment(args):
+        """Create a single video segment from a batch of lines."""
+        batch_idx, batch_lines, batch_audio_paths, batch_delays, batch_durations, segments_dir, video_format, cover_image, burn_subs = args
+        print(f"  Processing batch {batch_idx+1}/{num_batches} ({len(batch_lines)} lines)...", flush=True)
+        
+        # Merge audios for this batch
+        merged_audio_path = str(segments_dir / f"batch_{batch_idx:03d}_audio.wav")
+        try:
+             concatenate_audios(batch_audio_paths, batch_delays, merged_audio_path)
+        except Exception as e:
+             raise RuntimeError(f"Failed to merge audio for batch {batch_idx}: {e}")
+        
+        # Create subtitle file for this batch if needed
+        batch_subtitle_path = None
+        if burn_subs:
+             sub_file = str(segments_dir / f"batch_{batch_idx:03d}_subs.srt")
+             create_subtitle_file(batch_lines, batch_durations, sub_file)
+             batch_subtitle_path = sub_file
+
+        # Create video segment
+        segment_file = str(segments_dir / f"segment_{batch_idx:03d}.mp4")
         create_video_segment(
-            image_path=image_path,
-            audio_path=audio_path,
+            image_path=cover_image,
+            audio_path=merged_audio_path,
             output_path=segment_file,
-            video_format=video_format
+            video_format=video_format,
+            subtitle_path=batch_subtitle_path
         )
-        return (i, segment_file)
+        print(f"  Completed batch {batch_idx+1}/{num_batches}", flush=True)
+        return (batch_idx, segment_file)
 
-    # Prepare segment tasks
-    segment_tasks = [
-        (i, image_path, audio_path, segments_dir, video_format)
-        for i, (image_path, audio_path) in enumerate(zip(image_paths, audio_paths))
-    ]
+    # Prepare batch tasks
+    batch_tasks = []
+    for i in range(0, len(lines), SEGMENT_BATCH_SIZE):
+        batch_lines = lines[i : i + SEGMENT_BATCH_SIZE]
+        batch_audio_paths = audio_paths[i : i + SEGMENT_BATCH_SIZE]
+        # Get delays (convert ms to int)
+        batch_delays = [int(line.delay_duration_ms) for line in batch_lines]
+        # Get durations (for subtitles)
+        batch_durations = audio_durations[i : i + SEGMENT_BATCH_SIZE]
+        
+        batch_idx = i // SEGMENT_BATCH_SIZE
+        
+        task = (
+            batch_idx,
+            batch_lines,
+            batch_audio_paths,
+            batch_delays,
+            batch_durations,
+            segments_dir,
+            video_format,
+            cover_image_file,
+            burn_subtitles
+        )
+        batch_tasks.append(task)
 
-    # Create segments with 4 threads
-    segment_results = [None] * len(lines)
-    with ThreadPoolExecutor(max_workers=4) as executor:
-        futures = {executor.submit(create_single_segment, task): task[0] for task in segment_tasks}
+    # Create segments with configured thread pool
+    batch_results = [None] * num_batches
+    with ThreadPoolExecutor(max_workers=MAX_VIDEO_THREADS) as executor:
+        futures = {executor.submit(create_batch_segment, task): task[0] for task in batch_tasks}
 
         for future in as_completed(futures):
             idx, segment_file = future.result()
-            segment_results[idx] = segment_file
-            print(f"  Created segment {idx+1}/{len(lines)}")
+            batch_results[idx] = segment_file
 
     # Extract segment paths in correct order
-    segment_paths = segment_results
+    segment_paths = batch_results
 
     # Step 6: Concatenate and export
     print("\n[6/6] Concatenating and exporting final video...")
@@ -288,11 +401,17 @@ def create_podcast_video(
 
     output_file.parent.mkdir(parents=True, exist_ok=True)
 
+    # Note: If burn_subtitles is True, we already burned them into the segments.
+    # So we don't need to burn them again in the final export, but we might still want
+    # to pass the API updated logic.
+    # However, export_video function handles 'include_subtitles=True' by burning them.
+    # We should set include_subtitles=False here if we already burned them per-segment.
+    
     export_video(
         video_path=merged_video,
         output_path=str(output_file),
         video_format=video_format,
-        include_subtitles=burn_subtitles,
+        include_subtitles=False, # Already burned in segments if requested
         subtitle_path=subtitle_file
     )
 

@@ -10,8 +10,9 @@ A Python tool that automatically generates podcast videos from script data. It c
 - Creates video segments with FFmpeg
 - Supports horizontal (16:9) and vertical (9:16) video formats
 - Generates SRT subtitle files
-- Audio spectrum visualization
-- Vignette effect
+- Docker support for containerized deployment
+- Upload service with retry logic
+- Auto-update script status after video generation
 
 ## Demo
 
@@ -20,7 +21,7 @@ https://github.com/user-attachments/assets/dcbf9700-89b7-4b91-aa4f-c39d4f1b4f1c
 ## Requirements
 
 - Python 3.10+
-- FFmpeg (must be installed and in PATH)
+- FFmpeg (auto-installed via `static-ffmpeg`)
 
 ## Installation
 
@@ -37,16 +38,30 @@ pip install -r requirements.txt
 cp .env.example .env
 ```
 
-4. Edit `.env` with your API keys:
+4. Edit `.env` with your settings:
 
 ```
-OPENAI_API_KEY=your_openai_api_key
-MATCHIVE_API_KEY=your_matchive_api_key
+# OpenAI Compatible API for image generation
+OPENAI_API_URL=https://openai.matchive.io.vn/v1/chat/completions
+OPENAI_API_KEY=your_openai_api_key_here
+
+# Matchive API for script and audio
+MATCHIVE_API_URL=https://api.matchive.io.vn
+MATCHIVE_API_KEY=your_matchive_api_key_here
+
+# Download configuration
+MAX_DOWNLOAD_THREADS=3
+MAX_VIDEO_THREADS=4
+
+# Upload service configuration
+UPLOAD_API_URL=https://api.matchive.io.vn/manager/media/upload-any
+UPLOAD_MAX_RETRIES=3
+UPLOAD_RETRY_DELAY=2
 ```
 
 ## Usage
 
-### Basic Usage
+### CLI Usage
 
 ```bash
 # Horizontal video (YouTube/Facebook) - default
@@ -56,7 +71,7 @@ python main.py --script-id <SCRIPT_ID> --output podcast.mp4
 python main.py --script-id <SCRIPT_ID> --output podcast.mp4 --format vertical
 ```
 
-### Options
+### CLI Options
 
 | Option             | Description                                    |
 | ------------------ | ---------------------------------------------- |
@@ -87,21 +102,27 @@ Run as an HTTP API service for integration with other applications:
 
 ```bash
 # Start the API server
+python server.py
+
+# Or with uvicorn directly
 uvicorn api:app --host 0.0.0.0 --port 8000
 
-# Or with auto-reload for development
+# Development mode with auto-reload
 uvicorn api:app --reload --port 8000
 ```
 
 ### API Endpoints
 
-| Method | Endpoint                            | Description          |
-| ------ | ----------------------------------- | -------------------- |
-| GET    | `/health`                           | Health check         |
-| POST   | `/api/v1/videos`                    | Create video (async) |
-| GET    | `/api/v1/videos/{task_id}`          | Get task status      |
-| GET    | `/api/v1/videos/{task_id}/download` | Download video       |
-| GET    | `/api/v1/videos/{task_id}/subtitle` | Download subtitle    |
+| Method | Endpoint                            | Description               |
+| ------ | ----------------------------------- | ------------------------- |
+| GET    | `/health`                           | Health check              |
+| POST   | `/api/v1/videos`                    | Create video (async)      |
+| GET    | `/api/v1/videos/{task_id}`          | Get task status           |
+| GET    | `/api/v1/videos/{task_id}/download` | Download video            |
+| GET    | `/api/v1/videos/{task_id}/subtitle` | Download subtitle         |
+| GET    | `/api/v1/download?file={filename}`  | Download file by name     |
+| GET    | `/api/v1/preview?file={filename}`   | Preview file (inline)     |
+| DELETE | `/api/v1/files/{filename}`          | Delete video and subtitle |
 
 ### Example: Create Video
 
@@ -126,6 +147,24 @@ curl -o video.mp4 http://localhost:8000/api/v1/videos/abc-123/download
 
 API documentation is available at `http://localhost:8000/docs` (Swagger UI).
 
+## Docker Deployment
+
+Build and run with Docker:
+
+```bash
+# Build image
+docker build -t ai-podcast-creator .
+
+# Run container
+docker run -p 8000:8000 --env-file .env ai-podcast-creator
+```
+
+Or use Docker Compose:
+
+```bash
+docker-compose up -d
+```
+
 ## Output
 
 - Video file: `output/<filename>.mp4`
@@ -133,11 +172,21 @@ API documentation is available at `http://localhost:8000/docs` (Swagger UI).
 
 ## Configuration
 
-Edit `config.py` to customize:
+Edit `config.py` or use environment variables to customize:
 
-- Video resolution and FPS
-- Subtitle font, size, and color
-- API endpoints
+| Variable              | Default | Description                     |
+| --------------------- | ------- | ------------------------------- |
+| `MAX_DOWNLOAD_THREADS`| 1       | Parallel audio download threads |
+| `MAX_VIDEO_THREADS`   | 4       | Parallel video processing       |
+| `SEGMENT_BATCH_SIZE`  | 50      | Lines per video segment         |
+| `FFMPEG_PATH`         | ffmpeg  | Path to FFmpeg binary           |
+
+### Video Settings
+
+- Horizontal: 1920x1080 (16:9) - YouTube/Facebook
+- Vertical: 1080x1920 (9:16) - Shorts/Reels
+- FPS: 24
+- Codec: H.264 (libx264) / AAC
 
 ## Project Structure
 
@@ -145,13 +194,32 @@ Edit `config.py` to customize:
 AI-podcast-creator/
 ├── main.py             # CLI entry point
 ├── api.py              # FastAPI server
+├── server.py           # Server runner
 ├── schemas.py          # Pydantic models
 ├── config.py           # Configuration
 ├── api_client.py       # External API interactions
 ├── media_processor.py  # Image/Audio processing
 ├── video_generator.py  # Video creation with FFmpeg
+├── upload_service.py   # Video upload with retry
 ├── requirements.txt    # Dependencies
+├── Dockerfile          # Docker image config
+├── docker-compose.yml  # Docker Compose config
 ├── .env.example        # Environment template
-├── temp/               # Temporary files
-└── output/             # Generated videos
+├── scripts/            # Helper scripts
+│   └── setup.sh        # Setup and run script
+├── temp/               # Temporary files (gitignored)
+└── output/             # Generated videos (gitignored)
 ```
+
+## Scripts
+
+### Quick Setup and Run
+
+```bash
+./scripts/setup.sh
+```
+
+This script will:
+1. Create/verify Python virtual environment
+2. Install/update dependencies
+3. Start the API server

@@ -7,6 +7,15 @@ import os
 from pathlib import Path
 from dotenv import load_dotenv
 from enum import Enum
+import sys
+
+# Import static_ffmpeg to ensure binaries are available
+try:
+    import static_ffmpeg
+    static_ffmpeg.add_paths()
+    print("static-ffmpeg: FFmpeg/FFprobe paths added to system PATH.")
+except ImportError:
+    print("static-ffmpeg not found. Please install it via 'pip install static-ffmpeg'.")
 
 # Load environment variables from .env file
 load_dotenv()
@@ -16,6 +25,13 @@ OPENAI_API_URL = os.getenv("OPENAI_API_URL", "https://openai.matchive.io.vn/v1/c
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 MATCHIVE_API_URL = os.getenv("MATCHIVE_API_URL", "https://api.matchive.io.vn")
 MATCHIVE_API_KEY = os.getenv("MATCHIVE_API_KEY", "")
+APP_BASE_URL = os.getenv("APP_BASE_URL", "http://localhost:8000")
+
+# Video configuration
+MAX_DOWNLOAD_THREADS = int(os.getenv("MAX_DOWNLOAD_THREADS", "1"))
+MAX_VIDEO_THREADS = int(os.getenv("MAX_VIDEO_THREADS", "4"))
+FFMPEG_PATH = os.getenv("FFMPEG_PATH", "ffmpeg")
+SEGMENT_BATCH_SIZE = int(os.getenv("SEGMENT_BATCH_SIZE", "50"))
 
 # Model configuration
 IMAGE_MODEL = "gemini-3-pro-image-preview"

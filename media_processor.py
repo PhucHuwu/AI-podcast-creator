@@ -4,16 +4,42 @@ Handles image saving, audio processing, and subtitle creation.
 """
 
 import re
-import struct
-import wave
 from pathlib import Path
 from typing import Optional
 from PIL import Image
 import io
+from pydub import AudioSegment
 
 from api_client import ScriptLine
+from video_generator import FINAL_FFMPEG_PATH
+import shutil
+import os
 
+# Configure pydub to use the detected FFmpeg/FFprobe path
+# static-ffmpeg (imported in config.py) should have added them to PATH.
+_ffmpeg_path = shutil.which("ffmpeg")
+_ffprobe_path = shutil.which("ffprobe")
 
+if _ffmpeg_path:
+    AudioSegment.converter = _ffmpeg_path
+    print(f"Pydub configured: ffmpeg={_ffmpeg_path}")
+else:
+    print("Pydub warning: ffmpeg not found in system PATH (even with static-ffmpeg).")
+
+if _ffprobe_path:
+    AudioSegment.ffprobe = _ffprobe_path
+    print(f"Pydub configured: ffprobe={_ffprobe_path}")
+else:
+    print("Pydub warning: ffprobe not found in system PATH (even with static-ffmpeg).")
+
+# DEBUG: Verify Paths
+print(f"DEBUG: FINAL_FFMPEG_PATH: {FINAL_FFMPEG_PATH}")
+print(f"DEBUG: AudioSegment.converter: {AudioSegment.converter}")
+if AudioSegment.converter and os.path.exists(AudioSegment.converter):
+    print(f"DEBUG: Converter executable exists at: {AudioSegment.converter}")
+else:
+    print(f"DEBUG: Converter executable NOT FOUND at: {AudioSegment.converter}")
+    
 def remove_bracketed_text(text: str) -> str:
     """
     Remove all [bracketed text] patterns from a string.
@@ -73,55 +99,32 @@ def save_audio(audio_bytes: bytes, output_path: str) -> str:
 
     with open(path, "wb") as f:
         f.write(audio_bytes)
+        f.flush()
+        os.fsync(f.fileno())
 
-    return str(path.absolute())
+    abs_path = str(path.absolute())
+    print(f"DEBUG: Saved audio to: {abs_path} (Size: {len(audio_bytes)} bytes)")
+    return abs_path
 
 
 def get_audio_duration(audio_path: str) -> float:
     """
-    Get the duration of an audio file in seconds.
+    Get the duration of an audio file in seconds using pydub.
+    This ensures consistency with the concatenation process.
 
     Args:
-        audio_path: Path to the audio file (WAV format).
+        audio_path: Path to the audio file.
 
     Returns:
         Duration in seconds.
     """
     try:
-        with wave.open(audio_path, 'rb') as wav_file:
-            frames = wav_file.getnframes()
-            rate = wav_file.getframerate()
-            duration = frames / float(rate)
-            return duration
-    except Exception:
-        # If wave module fails, try to read manually
-        with open(audio_path, 'rb') as f:
-            # Read WAV header
-            f.read(4)  # RIFF
-            f.read(4)  # file size
-            f.read(4)  # WAVE
-
-            # Find fmt chunk
-            while True:
-                chunk_id = f.read(4)
-                if not chunk_id:
-                    break
-                chunk_size = struct.unpack('<I', f.read(4))[0]
-
-                if chunk_id == b'fmt ':
-                    f.read(2)  # audio format
-                    channels = struct.unpack('<H', f.read(2))[0]
-                    sample_rate = struct.unpack('<I', f.read(4))[0]
-                    f.read(chunk_size - 8)  # skip rest
-                elif chunk_id == b'data':
-                    data_size = chunk_size
-                    # Calculate duration
-                    bytes_per_sample = 2  # Assuming 16-bit
-                    duration = data_size / (sample_rate * channels * bytes_per_sample)
-                    return duration
-                else:
-                    f.read(chunk_size)
-
+        # Use pydub to check duration - this reads the actual audio data/header correctly
+        # and handles various formats (wav, mp3, etc.) consistent with concatenation
+        audio = AudioSegment.from_file(audio_path)
+        return audio.duration_seconds
+    except Exception as e:
+        print(f"Error getting duration for {audio_path}: {e}")
         # Default fallback
         return 3.0
 
@@ -237,6 +240,76 @@ def resize_image_for_video(
         cropped.save(output_path, format="PNG")
 
     return output_path
+
+
+def concatenate_audios(
+    audio_paths: list[str],
+    delays_ms: list[int],
+    output_path: str
+) -> str:
+    """
+    Concatenate multiple audio files with delays into a single file.
+    
+    Args:
+        audio_paths: List of paths to audio files.
+        delays_ms: List of delay durations in milliseconds (after each audio).
+        output_path: Path to save the merged audio.
+        
+    Returns:
+        Path to the merged audio file.
+    """
+    if not audio_paths:
+        raise ValueError("No audio paths provided for concatenation")
+    
+    combined = AudioSegment.empty()
+    
+    for audio_path, delay in zip(audio_paths, delays_ms):
+        print(f"DEBUG: Processing audio segment: {audio_path}")
+        if not os.path.exists(audio_path):
+             print(f"DEBUG: ERROR - File does not exist at {audio_path}")
+             # Try absolute path resolution if relative
+             abs_path = os.path.abspath(audio_path)
+             if os.path.exists(abs_path):
+                 print(f"DEBUG: Found at absolute path: {abs_path}")
+                 audio_path = abs_path
+             else:
+                 print(f"DEBUG: Still not found at absolute path: {abs_path}")
+        
+        try:
+            # Load audio - optimize for WAV to check format without external tools if possible
+            if str(audio_path).lower().endswith(".wav"):
+                try:
+                     segment = AudioSegment.from_wav(audio_path)
+                except Exception as wav_err:
+                     print(f"Warning: Failed to load as WAV natively ({wav_err}), trying generic load...")
+                     segment = AudioSegment.from_file(audio_path)
+            else:
+                segment = AudioSegment.from_file(audio_path)
+            
+            # Append audio
+            combined += segment
+            
+            # Append silence (delay)
+            if delay > 0:
+                silence = AudioSegment.silent(duration=delay)
+                combined += silence
+                
+        except Exception as e:
+            print(f"Error processing audio {audio_path}: {e}")
+            # Continue with other files/segments
+            continue
+            
+    # Export merged file
+    # Use config FFMPEG_PATH for pydub if needed? 
+    # Pydub uses system ffmpeg typically. 
+    # We export as wav which is standard.
+    
+    path = Path(output_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    
+    combined.export(str(path), format="wav")
+    
+    return str(path.absolute())
 
 
 if __name__ == "__main__":

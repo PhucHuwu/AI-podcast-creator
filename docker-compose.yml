@@ -1,0 +1,21 @@
+version: '3.8'
+
+services:
+  video-pipeline:
+    image: registry.gitlab.com/conten-creator/video-pipeline:1.0.0
+    container_name: video-pipeline
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    volumes:
+      - ./venv:/app/venv
+      - ./output:/app/output
+      - ./temp:/app/temp
+    restart: unless-stopped
+    networks:
+      - matchive-network
+
+networks:
+  matchive-network:
+    driver: bridge

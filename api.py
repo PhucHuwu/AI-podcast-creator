@@ -12,7 +12,7 @@ from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 
-from config import VideoFormat, OUTPUT_DIR, validate_config
+from config import VideoFormat, OUTPUT_DIR, APP_BASE_URL, validate_config
 from schemas import (
     CreateVideoRequest,
     CreateVideoResponse,
@@ -23,6 +23,8 @@ from schemas import (
     ErrorResponse
 )
 from main import create_podcast_video, cleanup_temp_files
+from upload_service import upload_and_cleanup
+from api_client import update_script_status
 
 
 # In-memory task storage
@@ -78,6 +80,28 @@ def process_video_task(task_id: str, request: CreateVideoRequest):
 
         tasks[task_id]["status"] = TaskStatusEnum.COMPLETED
         tasks[task_id]["progress"] = 100
+        tasks[task_id]["message"] = "Video created, uploading..."
+
+        tasks[task_id]["message"] = "Video created, updating status..."
+        
+        # Skip external upload and use local file
+        # Check if file exists (it should, based on result_path)
+        if Path(result_path).exists():
+            # Construct local download URL (supports streaming/download)
+            # output_filename was defined earlier as f"{task_id}.mp4"
+            video_url = f"{APP_BASE_URL}/api/v1/download?file={output_filename}"
+            tasks[task_id]["video_url"] = video_url
+            
+            try:
+                update_script_status(request.script_id, video_url)
+                tasks[task_id]["message"] = "Process completed successfully (Local)"
+            except Exception as e:
+                tasks[task_id]["message"] = f"Video created but failed to update status: {str(e)}"
+                print(f"Error updating script status: {e}")
+        else:
+             tasks[task_id]["message"] = "Video creation reported success but file missing"
+             tasks[task_id]["status"] = TaskStatusEnum.FAILED
+             tasks[task_id]["upload_failed"] = True # reusing flag or create new error state
 
         # Cleanup temp files
         cleanup_temp_files()
@@ -270,6 +294,126 @@ async def download_subtitle(task_id: str):
         media_type="text/plain",
         filename=f"podcast_{task_id}.srt"
     )
+
+
+@app.get(
+    "/api/v1/download",
+    tags=["Videos"],
+    summary="Download video file by name"
+)
+async def download_file_by_name(file: str):
+    """
+    Download video content by filename from the output directory.
+    
+    Args:
+        file: The filename of the video (e.g., "task_id.mp4").
+    """
+    import os
+    
+    # Sanitize filename (simple check to prevent directory traversal)
+    if ".." in file or "/" in file or "\\" in file:
+         raise HTTPException(status_code=400, detail="Invalid filename")
+         
+    video_path = OUTPUT_DIR / file
+    
+    if not video_path.exists():
+        raise HTTPException(status_code=404, detail="Video file not found")
+        
+    return FileResponse(
+        str(video_path),
+        media_type="video/mp4",
+        filename=file 
+        , content_disposition_type="attachment"
+    )
+
+
+
+@app.get(
+    "/api/v1/preview",
+    tags=["Videos"],
+    summary="Preview video file by name"
+)
+async def preview_file_by_name(file: str):
+    """
+    Preview video content by filename from the output directory.
+    
+    Args:
+        file: The filename of the video (e.g., "task_id.mp4").
+    """
+    # Sanitize filename (simple check to prevent directory traversal)
+    if ".." in file or "/" in file or "\\" in file:
+         raise HTTPException(status_code=400, detail="Invalid filename")
+         
+    video_path = OUTPUT_DIR / file
+    
+    if not video_path.exists():
+        raise HTTPException(status_code=404, detail="Video file not found")
+        
+    return FileResponse(
+        str(video_path),
+        media_type="video/mp4",
+        filename=file,
+        content_disposition_type="inline"
+    )
+
+
+@app.delete(
+    "/api/v1/files/{filename}",
+    tags=["Management"],
+    summary="Delete video and subtitle files"
+)
+async def delete_file(filename: str):
+    """
+    Delete a video file and its corresponding subtitle file.
+    
+    Args:
+        filename: The name of the video file to delete (e.g., "7a02...mp4").
+    """
+    import os
+    
+    # Sanitize filename
+    if ".." in filename or "/" in filename or "\\" in filename:
+         raise HTTPException(status_code=400, detail="Invalid filename")
+    
+    deleted_files = []
+    errors = []
+    
+    # Paths to potential files
+    video_path = OUTPUT_DIR / filename
+    
+    # Verify it is a file inside output dir
+    if not str(video_path.absolute()).startswith(str(OUTPUT_DIR.absolute())):
+        raise HTTPException(status_code=400, detail="Invalid file path")
+        
+    # Delete video
+    if video_path.exists():
+        try:
+            os.remove(video_path)
+            deleted_files.append(filename)
+        except Exception as e:
+            errors.append(f"Failed to delete video: {str(e)}")
+            
+    # Check for subtitle (replace extension)
+    # Assuming standard pattern: video.mp4 -> video.srt
+    stem = video_path.stem
+    subtitle_filename = f"{stem}.srt"
+    subtitle_path = OUTPUT_DIR / subtitle_filename
+    
+    if subtitle_path.exists():
+        try:
+             os.remove(subtitle_path)
+             deleted_files.append(subtitle_filename)
+        except Exception as e:
+             errors.append(f"Failed to delete subtitle: {str(e)}")
+             
+    if not deleted_files and not errors:
+        return {"message": "File not found", "deleted": []}
+        
+    return {
+        "message": "Cleanup operation completed",
+        "deleted": deleted_files,
+        "errors": errors
+    }
 
 
 if __name__ == "__main__":

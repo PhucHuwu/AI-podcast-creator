@@ -176,7 +176,7 @@ def generate_image(prompt: str, style: str = "podcast illustration") -> bytes:
     raise ValueError("Could not extract image from API response")
 
 
-def download_audio(audio_path: str, max_retries: int = 3, timeout: int = 30) -> bytes:
+def download_audio(audio_path: str, max_retries: int = 3, timeout: int = 120) -> bytes:
     """
     Download audio file from the API with retry logic.
     
@@ -201,19 +201,100 @@ def download_audio(audio_path: str, max_retries: int = 3, timeout: int = 30) -> 
     last_error = None
     for attempt in range(max_retries):
         try:
-            response = requests.get(url, headers=headers, timeout=timeout)
+            response = requests.get(url, headers=headers, timeout=timeout, stream=True)
             response.raise_for_status()
-            return response.content
-        except (requests.exceptions.ChunkedEncodingError, 
+            
+            # Read streaming content
+            content = b""
+            for chunk in response.iter_content(chunk_size=8192):
+                if chunk:
+                    content += chunk
+            
+            return content
+            
+        except (requests.exceptions.HTTPError,
+                requests.exceptions.ChunkedEncodingError, 
                 requests.exceptions.ConnectionError,
                 requests.exceptions.Timeout) as e:
             last_error = e
             if attempt < max_retries - 1:
-                wait_time = (attempt + 1) * 2  # Exponential backoff: 2s, 4s, 6s
-                time.sleep(wait_time)
+                time.sleep((attempt + 1) * 2)
             continue
     
     raise last_error
+
+
+def update_script_status(script_id: str, video_url: str, status: str = "WAIT_FOR_REVIEW") -> dict:
+    """
+    Update the script status and video URL on the backend.
+    
+    Args:
+        script_id: The ID of the script.
+        video_url: The URL of the uploaded video.
+        status: The new status (default: "WAIT_FOR_REVIEW").
+        
+    Returns:
+        API response JSON.
+    """
+    url = f"{MATCHIVE_API_URL}/manager/lesson-manager/scripts/{script_id}"
+    headers = {
+        "accept": "*/*",
+        "Content-Type": "application/json",
+        "Authorization": f"Apikey {MATCHIVE_API_KEY}"
+    }
+    
+    payload = {
+        "videoUrl": video_url,
+        "status": status
+    }
+    
+    response = requests.put(url, headers=headers, json=payload)
+    response.raise_for_status()
+    
+    return response.json()
+
+
+@dataclass
+class ScriptInfo:
+    """Represents script metadata."""
+    id: str
+    title: str
+    lesson_title: str
+    topic_title: str
+    topic_type: str = "LONG"
+
+
+def get_script_info(script_id: str) -> ScriptInfo:
+    """
+    Fetch script metadata including titles.
+    
+    Args:
+        script_id: The ID of the script.
+        
+    Returns:
+        ScriptInfo object.
+    """
+    url = f"{MATCHIVE_API_URL}/manager/lesson-manager/scripts/{script_id}"
+    headers = {
+        "accept": "*/*",
+        "Authorization": f"Apikey {MATCHIVE_API_KEY}"
+    }
+    
+    response = requests.get(url, headers=headers)
+    response.raise_for_status()
+    
+    data = response.json().get("data", {})
+    
+    lesson = data.get("lesson", {})
+    topic = lesson.get("topic", {})
+    
+    return ScriptInfo(
+        id=data.get("id", ""),
+        title=data.get("title", ""),
+        lesson_title=lesson.get("title", ""),
+        topic_title=topic.get("title", ""),
+        topic_type=topic.get("topicType", "LONG")
+    )
 
 
 if __name__ == "__main__":

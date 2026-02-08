@@ -38,6 +38,7 @@ env/
 # Project specific
 temp/
 output/
+test/
 *.mp4
 *.wav
 *.mp3
@@ -47,3 +48,4 @@ output/
 # Draft docs
 *.md
 !README.md
+myenv/
